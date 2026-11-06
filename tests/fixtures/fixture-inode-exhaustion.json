@@ -1,0 +1,29 @@
+{
+  "timestamp_utc": "2026-11-06T00:35:00Z",
+  "hostname": "mock-server-02-inodes.synthetic-lab.local",
+  "kernel": "5.15.0-105-generic",
+  "uptime": "up 42 days, 8 hours",
+  "ip_addresses": ["192.0.2.20", "10.240.20.25"],
+  "failed_services": [
+    "postfix.service",
+    "synthetic-worker.service"
+  ],
+  "disk_usage": [
+    "/dev/sda1 100G 52G 48G 52% /",
+    "/dev/sda2 50G 24G 26G 48% /var"
+  ],
+  "inode_usage": [
+    "/dev/sda1 6553600 620000 5933600 10% /",
+    "/dev/sda2 3276800 3276800 0 100% /var"
+  ],
+  "memory": {
+    "free_h": "total:16.0Gi, used:6.2Gi, free:8.4Gi, available:9.8Gi",
+    "oom_killer_events": 0
+  },
+  "recent_kernel_errors": [
+    "postfix/master[1820]: fatal: open lock file /var/spool/postfix/pid/master.pid: No space left on device",
+    "synthetic-worker[2041]: OSError: [Errno 28] No space left on device: '/var/spool/synthetic-queue/task_99182.tmp'",
+    "systemd[1]: postfix.service: Main process exited, code=exited, status=1/FAILURE",
+    "systemd[1]: synthetic-worker.service: Main process exited, code=exited, status=1/FAILURE"
+  ]
+}

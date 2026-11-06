@@ -1,0 +1,37 @@
+{
+  "timestamp_utc": "2026-11-06T00:45:00Z",
+  "hostname": "mock-server-04-iowait.synthetic-lab.local",
+  "kernel": "5.15.0-105-generic",
+  "uptime": "up 9 days, 14 hours",
+  "ip_addresses": ["192.0.2.40", "10.240.40.45"],
+  "failed_services": [],
+  "disk_usage": [
+    "/dev/sda1 100G 68G 32G 68% /",
+    "/dev/sda2 1000G 810G 190G 81% /var/lib/mysql"
+  ],
+  "inode_usage": [
+    "/dev/sda1 6553600 810000 5743600 12% /",
+    "/dev/sda2 65536000 1200000 64336000 2% /var/lib/mysql"
+  ],
+  "memory": {
+    "free_h": "total:32.0Gi, used:29.1Gi, free:1.2Gi, available:2.9Gi",
+    "oom_killer_events": 0
+  },
+  "io_metrics": {
+    "device": "sda",
+    "util_pct": 99.4,
+    "r_await": 142.5,
+    "w_await": 320.1,
+    "iowait_pct": 38.5
+  },
+  "processes_uninterruptible_sleep": [
+    "mysqld (PID: 2490, State: D)",
+    "synthetic-backup-job (PID: 18402, State: D)"
+  ],
+  "recent_kernel_errors": [
+    "INFO: task mysqld:2490 blocked for more than 120 seconds.",
+    "echo 0 > /proc/sys/kernel/hung_task_timeout_secs disables this message.",
+    "kernel: [81204.1200] sd 0:0:0:0: [sda] tag#12 FAILED Result: hostbyte=DID_OK driverbyte=DRIVER_OK cmd_status=CHECK_CONDITION",
+    "kernel: [81204.1201] sd 0:0:0:0: [sda] tag#12 Medium Error: Unrecovered read error - auto reallocate failed"
+  ]
+}

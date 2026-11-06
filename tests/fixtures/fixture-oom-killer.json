@@ -1,0 +1,28 @@
+{
+  "timestamp_utc": "2026-11-06T00:30:00Z",
+  "hostname": "mock-server-01-oom.synthetic-lab.local",
+  "kernel": "5.15.0-105-generic",
+  "uptime": "up 14 days, 3 hours",
+  "ip_addresses": ["192.0.2.10", "10.240.10.15"],
+  "failed_services": [
+    "synthetic-app-backend.service"
+  ],
+  "disk_usage": [
+    "/dev/sda1 100G 42G 58G 42% /",
+    "/dev/sdb1 500G 210G 290G 42% /data"
+  ],
+  "inode_usage": [
+    "/dev/sda1 6553600 450000 6103600 7% /",
+    "/dev/sdb1 32768000 1200000 31568000 4% /data"
+  ],
+  "memory": {
+    "free_h": "total:8.0Gi, used:7.6Gi, free:120Mi, available:210Mi",
+    "oom_killer_events": 1
+  },
+  "recent_kernel_errors": [
+    "kernel: [120938.4010] Out of memory: Kill process 14205 (synthetic-java) score 982 or sacrifice child",
+    "kernel: [120938.4011] Killed process 14205 (synthetic-java) total-vm:8452100kB, anon-rss:7120340kB, file-rss:1240kB, shmem-rss:0kB",
+    "systemd[1]: synthetic-app-backend.service: Main process exited, code=killed, status=9/KILL",
+    "systemd[1]: synthetic-app-backend.service: Failed with result 'oom-kill'."
+  ]
+}
