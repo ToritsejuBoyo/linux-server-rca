@@ -23,8 +23,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 SYSTEMD_EXIT_CODES: Dict[str, Tuple[str, str, str]] = {
     "status=203/EXEC": (
-        "Executable binary missing, corrupted, or lacking execute (+x)"
-        " permissions.",
+        "Executable binary missing, corrupted, or lacking execute (+x) permissions.",
         "Verify binary path in unit file with 'which <binary>' and chmod +x.",
         "HIGH",
     ),
@@ -33,31 +32,54 @@ SYSTEMD_EXIT_CODES: Dict[str, Tuple[str, str, str]] = {
         "Inspect /etc/passwd or create required system account using useradd -r.",
         "HIGH",
     ),
+    "status=200/CHDIR": (
+        "Configured WorkingDirectory= does not exist or lacks execute/read access for service user.",
+        "Verify WorkingDirectory path exists and check permissions with 'ls -ld <path>'.",
+        "HIGH",
+    ),
+    "status=208/STDIN": (
+        "Standard input/output/error descriptor redirection failed.",
+        "Check StandardOutput/StandardError paths, file permissions, or systemd-journald socket health.",
+        "HIGH",
+    ),
+    "status=214/SETSCHEDULER": (
+        "Failed to set real-time or CPU scheduling priority (lacks CAP_SYS_NICE).",
+        "Grant CAP_SYS_NICE via AmbientCapabilities= in unit file or adjust CPUSchedulingPriority.",
+        "HIGH",
+    ),
+    "status=226/NAMESPACE": (
+        "Failed to configure mount namespace isolation or filesystem sandboxing.",
+        "Inspect ProtectSystem=, ProtectHome=, or PrivateTmp= directives for non-existent bind mounts or container conflicts.",
+        "HIGH",
+    ),
     "status=1/FAILURE": (
-        "Application startup failure, invalid configuration file syntax, or"
-        " unhandled exception.",
-        "Run daemon binary directly with test/dry-run flag or inspect"
-        " journalctl -u <unit> -b.",
+        "Application startup failure, invalid configuration file syntax, or unhandled exception.",
+        "Run daemon binary directly with test/dry-run flag or inspect journalctl -u <unit> -b.",
         "HIGH",
     ),
     "status=137": (
-        "Process terminated with SIGKILL (signal 9), typically triggered by"
-        " Linux OOM killer.",
-        "Investigate kernel memory limits (dmesg | grep oom) and increase swap"
-        " or cgroup memory quotas.",
+        "Process terminated with SIGKILL (signal 9), typically triggered by Linux OOM killer.",
+        "Investigate kernel memory limits (dmesg | grep oom) and increase swap or cgroup memory quotas.",
         "CRITICAL",
     ),
     "status=9/KILL": (
-        "Process forcefully terminated by SIGKILL or cgroup memory limit"
-        " breach.",
-        "Check systemd MemoryMax quota and kernel dmesg for OOM killer"
-        " invocations.",
+        "Process forcefully terminated by SIGKILL or cgroup memory limit breach.",
+        "Check systemd MemoryMax quota and kernel dmesg for OOM killer invocations.",
         "CRITICAL",
+    ),
+    "status=127": (
+        "Executable command not found in PATH or shell wrapper invocation failed.",
+        "Specify absolute binary path in ExecStart= or install missing executable.",
+        "HIGH",
+    ),
+    "status=126": (
+        "Command invoked cannot execute due to missing permissions or incompatible architecture.",
+        "Verify binary executable bits (+x) and architecture with 'file <binary>'.",
+        "HIGH",
     ),
     "status=143": (
         "Process received graceful SIGTERM (signal 15) stop request.",
-        "Verify if administrative stop or automated orchestrator/scaler sent"
-        " termination signal.",
+        "Verify if administrative stop or automated orchestrator/scaler sent termination signal.",
         "LOW",
     ),
 }
@@ -150,7 +172,21 @@ class Sanitizer:
         flags=re.IGNORECASE,
     )
 
-    # 3. Mask IPv4 addresses (private & public)
+    # 3. Scrub emails and User Principal Names (Rule 4)
+    clean = re.sub(
+        r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b",
+        "user-masked@synthetic-test.local",
+        clean,
+    )
+
+    # 4. Scrub IPv6 addresses (full and compressed formats)
+    clean = re.sub(
+        r"\b(?:[0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}\b|\bfe80::[0-9a-fA-F:]+\b|\b2[0-9a-fA-F]{3}:[0-9a-fA-F:]+\b",
+        "2001:db8::1",
+        clean,
+    )
+
+    # 5. Mask IPv4 addresses (private & public)
     clean = re.sub(
         r"\b10\.\d{1,3}\.\d{1,3}\.\d{1,3}\b",
         lambda m: self.sanitize_ip(m.group(0)),
@@ -163,6 +199,11 @@ class Sanitizer:
     )
     clean = re.sub(
         r"\b192\.168\.\d{1,3}\.\d{1,3}\b",
+        lambda m: self.sanitize_ip(m.group(0)),
+        clean,
+    )
+    clean = re.sub(
+        r"\b(?!127\.0\.0\.1|0\.0\.0\.0|198\.51\.100\.|192\.0\.2\.)(?:[1-9]\d?|1\d\d|2[0-4]\d|25[0-5])\.(?:\d{1,3}\.){2}(?:[1-9]\d?|1\d\d|2[0-4]\d|25[0-5])\b",
         lambda m: self.sanitize_ip(m.group(0)),
         clean,
     )
@@ -191,6 +232,7 @@ def parse_telemetry(raw_data: str) -> Dict[str, Any]:
       "disk_usage": [],
       "inode_usage": [],
       "memory": {"free_h": "", "oom_killer_events": 0},
+      "io_metrics": {"util_pct": 0.0, "iowait_pct": 0.0},
       "processes_uninterruptible_sleep": [],
       "recent_kernel_errors": [],
   }
@@ -213,6 +255,12 @@ def parse_telemetry(raw_data: str) -> Dict[str, Any]:
     elif "dmesg" in raw or "journalctl" in raw:
       mode = "kernel_errors"
       continue
+    elif "%iowait" in raw.lower():
+      mode = "iostat_cpu"
+      continue
+    elif "%util" in raw.lower():
+      mode = "iostat_dev"
+      continue
 
     if mode == "failed_services" and ".service" in raw:
       parts = raw.split()
@@ -227,6 +275,20 @@ def parse_telemetry(raw_data: str) -> Dict[str, Any]:
       parsed["recent_kernel_errors"].append(raw)
       if "out of memory" in raw.lower():
         parsed["memory"]["oom_killer_events"] += 1
+    elif mode == "iostat_cpu":
+      parts = raw.split()
+      if len(parts) >= 4:
+        try:
+          parsed["io_metrics"]["iowait_pct"] = float(parts[3])
+        except ValueError:
+          pass
+    elif mode == "iostat_dev":
+      parts = raw.split()
+      if parts:
+        try:
+          parsed["io_metrics"]["util_pct"] = float(parts[-1])
+        except ValueError:
+          pass
 
   return parsed
 
@@ -298,7 +360,7 @@ def evaluate_rca(
         if "out of memory" in line.lower() or "oom-kill" in line.lower()
     ]
     rem_steps = [
-        f"# Step 1: Identify current top memory consumers",
+        "# Step 1: Identify current top memory consumers",
         "ps -eo pid,ppid,cmd,%mem,%cpu --sort=-%mem | head -15",
         "",
         "# Step 2: Check for memory leak or runaway processes",
@@ -362,6 +424,9 @@ def evaluate_rca(
       try:
         pct = int(parts[4].replace("%", ""))
         mount = parts[5] if len(parts) > 5 else parts[0]
+        # Ignore snap and loop mounts (always 100% full by design on modern Linux)
+        if mount.startswith("/snap") or parts[0].startswith("/dev/loop"):
+          continue
         if pct >= 90:
           rem_steps = [
               f"# Step 1: Identify directory harboring millions of tiny files on {mount}:",
@@ -418,6 +483,9 @@ def evaluate_rca(
       try:
         pct = int(parts[4].replace("%", ""))
         mount = parts[5] if len(parts) > 5 else parts[0]
+        # Ignore snap and loop mounts (always 100% full by design on modern Linux)
+        if mount.startswith("/snap") or parts[0].startswith("/dev/loop"):
+          continue
         if pct >= 90:
           rem_steps = [
               f"# Step 1: Locate top 10 largest space consumers on {mount}:",
@@ -462,70 +530,87 @@ def evaluate_rca(
   # -------------------------------------------------------
   for svc in failed_services:
     svc_base = svc.replace(".service", "")
-    # Collect error lines specifically mentioning this service
     svc_lines = [
         line
         for line in recent_errors
         if svc in line or f"{svc_base}[" in line or f"{svc_base}:" in line
     ]
+    svc_blob = "\n".join(svc_lines)
 
-    svc_code_matched = False
-    for code_str, (meaning, action, sev) in SYSTEMD_EXIT_CODES.items():
-      if code_str in error_blob:
-        svc_code_matched = True
-        rem_steps = [
-            f"# Step 1: Inspect detailed unit error journal",
-            f"journalctl -u {svc} -b --no-pager -n 25",
-            "",
-            f"# Step 2: Verify unit file configuration syntax",
-            f"systemd-analyze verify {svc}",
-            "",
-            f"# Step 3: Remediation action",
-            f"# {action}",
-            "",
-            f"# Step 4: Reload systemd manager and test restart",
-            f"systemctl daemon-reload",
-            f"systemctl restart {svc}",
-            f"systemctl is-active {svc}",
-        ]
-        hard_steps = [
-            (
-                "Configure restart throttling in service unit:"
-                " Restart=on-failure, RestartSec=5s."
-            ),
-            (
-                "Implement CI/CD pre-flight checks validating binary"
-                " permissions and user existence before deployment."
-            ),
-        ]
-        evidence = svc_lines if svc_lines else [
-            line for line in recent_errors if code_str in line
-        ][:3]
-        findings.append(
-            Finding(
-                finding_id=f"FINDING-{f_idx:03d}",
-                category="SYSTEMD_FAILURE",
-                severity=sev,
-                title=f"Service '{svc}' Failed with {code_str}",
-                description=(
-                    f"Unit '{svc}' terminated unexpectedly. Exit code meaning: {meaning}"
-                ),
-                evidence=evidence[:4],
-                remediation_steps=rem_steps,
-                hardening_steps=hard_steps,
-                cluster_warning=get_cluster_warning(svc),
-            )
-        )
-        f_idx += 1
-        break
+    matched_code = None
+    # 1. Search service-specific lines
+    if svc_lines:
+      for code_str in SYSTEMD_EXIT_CODES:
+        if code_str in svc_blob:
+          matched_code = code_str
+          break
 
-    if not svc_code_matched:
+    # 2. If not found in svc_lines, check recent_errors without attributing lines from other failed services
+    if not matched_code:
+      other_services = [s for s in failed_services if s != svc]
+      for line in recent_errors:
+        if any(other in line for other in other_services):
+          continue
+        for code_str in SYSTEMD_EXIT_CODES:
+          if code_str in line:
+            matched_code = code_str
+            break
+        if matched_code:
+          break
+
+    if matched_code:
+      meaning, action, sev = SYSTEMD_EXIT_CODES[matched_code]
       rem_steps = [
-          f"# Step 1: Inspect full failure logs",
+          "# Step 1: Inspect detailed unit error journal",
+          f"journalctl -u {svc} -b --no-pager -n 25",
+          "",
+          "# Step 2: Verify unit file configuration syntax",
+          f"systemd-analyze verify {svc}",
+          "",
+          "# Step 3: Remediation action",
+          f"# {action}",
+          "",
+          "# Step 4: Reload systemd manager and test restart",
+          "systemctl daemon-reload",
+          f"systemctl restart {svc}",
+          f"systemctl is-active {svc}",
+      ]
+      hard_steps = [
+          (
+              "Configure restart throttling in service unit:"
+              " Restart=on-failure, RestartSec=5s."
+          ),
+          (
+              "Implement CI/CD pre-flight checks validating binary"
+              " permissions and user existence before deployment."
+          ),
+      ]
+      evidence = [line for line in svc_lines if matched_code in line]
+      if not evidence:
+        evidence = [line for line in recent_errors if matched_code in line][:3]
+      findings.append(
+          Finding(
+              finding_id=f"FINDING-{f_idx:03d}",
+              category="SYSTEMD_FAILURE",
+              severity=sev,
+              title=f"Service '{svc}' Failed with {matched_code}",
+              description=(
+                  f"Unit '{svc}' terminated unexpectedly. Exit code meaning: {meaning}"
+              ),
+              evidence=evidence[:4],
+              remediation_steps=rem_steps,
+              hardening_steps=hard_steps,
+              cluster_warning=get_cluster_warning(svc),
+          )
+      )
+      f_idx += 1
+    else:
+      rem_steps = [
+          "# Step 1: Inspect full failure logs",
           f"systemctl status {svc} -l --no-pager",
           f"journalctl -u {svc} -e --no-pager -n 30",
           "",
-          f"# Step 2: Attempt safe restart after checking configs",
+          "# Step 2: Attempt safe restart after checking configs",
           f"systemctl restart {svc}",
           f"systemctl is-active {svc}",
       ]
@@ -554,7 +639,15 @@ def evaluate_rca(
   # -------------------------------------------------------
   util_pct = float(io_metrics.get("util_pct", 0.0) or 0.0)
   iowait_pct = float(io_metrics.get("iowait_pct", 0.0) or 0.0)
-  has_hung_task = "blocked for more than 120 seconds" in error_blob
+  hung_task_match = re.search(
+      r"blocked for more than (\d+) seconds", error_blob, re.IGNORECASE
+  )
+  storage_io_error = re.search(
+      r"(blk_update_request: I/O error|timeout, aborting command|Buffer I/O error|tag#\d+ FAILED Result)",
+      error_blob,
+      re.IGNORECASE,
+  )
+  has_hung_task = bool(hung_task_match) or bool(storage_io_error)
   if util_pct >= 85.0 or iowait_pct >= 20.0 or has_hung_task:
     rem_steps = [
         "# Step 1: Identify processes in uninterruptible disk sleep (D state):",
@@ -576,6 +669,20 @@ def evaluate_rca(
             " peak production hours."
         ),
     ]
+    ev_lines = []
+    if has_hung_task:
+      ev_lines = [
+          line
+          for line in recent_errors
+          if "blocked for more than" in line.lower()
+          or "blk_update_request" in line.lower()
+          or "timeout, aborting" in line.lower()
+          or "buffer i/o error" in line.lower()
+          or "failed result" in line.lower()
+      ][:3]
+    if not ev_lines:
+      ev_lines = [f"%util = {util_pct}%, %iowait = {iowait_pct}%"]
+
     findings.append(
         Finding(
             finding_id=f"FINDING-{f_idx:03d}",
@@ -585,15 +692,7 @@ def evaluate_rca(
             description=(
                 f"Storage subsystem is saturated with I/O queues. Multiple processes are locked in uninterruptible disk sleep (D-state). Blocked processes: {', '.join(uninterruptible_procs) if uninterruptible_procs else 'None listed'}."
             ),
-            evidence=(
-                [
-                    line
-                    for line in recent_errors
-                    if "blocked for more than" in line or "FAILED Result" in line
-                ][:3]
-                if has_hung_task
-                else [f"%util = {util_pct}%, %iowait = {iowait_pct}%"]
-            ),
+            evidence=ev_lines,
             remediation_steps=rem_steps,
             hardening_steps=hard_steps,
         )

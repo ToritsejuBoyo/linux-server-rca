@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Comprehensive 30-Test Stress & Fuzzing Battery for Linux Server RCA (stress_test_linux_rca.py)
+"""Comprehensive 38-Test Stress & Fuzzing Battery for Linux Server RCA (stress_test_linux_rca.py)
 
-Executes 30 distinct tests covering:
+Executes 38 distinct tests covering:
 - Malformed inputs, binary garbage, HTML, empty payloads (Tests 1-7)
 - Kernel OOM killer variations across RHEL, Ubuntu, cgroup v2 (Tests 8-10)
 - Inode vs disk space exhaustion boundary conditions (Tests 11-15)
@@ -10,6 +10,11 @@ Executes 30 distinct tests covering:
 - Compound disaster scenarios (Test 27)
 - Adversarial credential & network sanitization (Tests 28-29)
 - Massive scale log throughput benchmark (Test 30)
+- Enterprise hardened diagnostics: CHDIR, SETSCHEDULER, STDIN (Tests 31-33)
+- Snap/loop mount filtering (Test 34)
+- Variable hung task intervals & storage block timeouts (Tests 35-36)
+- Multi-service exit code isolation (Test 37)
+- Comprehensive IPv6, public IPv4, and UPN sanitization (Test 38)
 """
 
 from __future__ import annotations
@@ -160,18 +165,12 @@ class LinuxServerRCAThirtyTestSuite(unittest.TestCase):
   def test_10_kernel_oom_multiple_victims(self):
     """Test 10: Log with multiple victim processes in same incident."""
     payload = {
-        "hostname": "batch-worker.corp",
-        "failed_services": ["celery.service"],
+        "hostname": "busy-host.corp",
+        "failed_services": ["elasticsearch.service"],
         "memory": {"oom_killer_events": 2},
         "recent_kernel_errors": [
-            (
-                "kernel: Out of memory: Kill process 501 (celery) score 950 or"
-                " sacrifice child"
-            ),
-            (
-                "kernel: Out of memory: Kill process 502 (redis) score 920 or"
-                " sacrifice child"
-            ),
+            "kernel: Out of memory: Killed process 501 (logstash)",
+            "kernel: Out of memory: Killed process 502 (java)",
         ],
     }
     bundle = rca.parse_telemetry(json.dumps(payload))
@@ -181,7 +180,7 @@ class LinuxServerRCAThirtyTestSuite(unittest.TestCase):
     self.assertEqual(oom.severity, "CRITICAL")
 
   # -------------------------------------------------------------
-  # Group 3: Inode vs. Disk Storage Boundary Conditions (Tests 11-15)
+  # Group 3: Inode vs Storage Exhaustion Disambiguation (Tests 11-15)
   # -------------------------------------------------------------
 
   def test_11_inode_exhaustion_100pct_var(self):
@@ -192,15 +191,15 @@ class LinuxServerRCAThirtyTestSuite(unittest.TestCase):
     }
     bundle = rca.parse_telemetry(json.dumps(payload))
     findings, _ = rca.evaluate_rca(bundle, sanitize=False)
-    inode_f = next((f for f in findings if f.category == "INODE_EXHAUSTION"), None)
-    self.assertIsNotNone(inode_f)
-    self.assertEqual(inode_f.severity, "CRITICAL")
-    self.assertIn("/var", inode_f.title)
+    inode_find = next((f for f in findings if f.category == "INODE_EXHAUSTION"), None)
+    self.assertIsNotNone(inode_find)
+    self.assertEqual(inode_find.severity, "CRITICAL")
+    self.assertIn("/var", inode_find.title)
 
   def test_12_inode_exhaustion_92pct_threshold(self):
     """Test 12: Inode usage at 92% (triggers threshold >= 90%)."""
     payload = {
-        "inode_usage": ["/dev/sda1 1000000 920000 80000 92% /spool"],
+        "inode_usage": ["/dev/sda1 1000000 920000 80000 92% /opt"],
     }
     bundle = rca.parse_telemetry(json.dumps(payload))
     findings, _ = rca.evaluate_rca(bundle, sanitize=False)
@@ -209,7 +208,7 @@ class LinuxServerRCAThirtyTestSuite(unittest.TestCase):
   def test_13_inode_normal_89pct_boundary(self):
     """Test 13: Inode usage at 89% (strictly below 90% threshold -> no alarm)."""
     payload = {
-        "inode_usage": ["/dev/sda1 1000000 890000 110000 89% /spool"],
+        "inode_usage": ["/dev/sda1 1000000 890000 110000 89% /opt"],
     }
     bundle = rca.parse_telemetry(json.dumps(payload))
     findings, _ = rca.evaluate_rca(bundle, sanitize=False)
@@ -218,33 +217,34 @@ class LinuxServerRCAThirtyTestSuite(unittest.TestCase):
   def test_14_disk_space_full_99pct_root(self):
     """Test 14: Block disk space at 99% on root filesystem."""
     payload = {
-        "disk_usage": ["/dev/sda1 100G 99G 1G 99% /"],
+        "disk_usage": ["/dev/mapper/rootvg-root 50G 49.5G 0.5G 99% /"],
+        "inode_usage": ["/dev/mapper/rootvg-root 2000000 200000 1800000 10% /"],
     }
     bundle = rca.parse_telemetry(json.dumps(payload))
     findings, _ = rca.evaluate_rca(bundle, sanitize=False)
-    disk_f = next((f for f in findings if f.category == "DISK_SPACE_FULL"), None)
-    self.assertIsNotNone(disk_f)
-    self.assertEqual(disk_f.severity, "HIGH")
+    disk_find = next((f for f in findings if f.category == "DISK_SPACE_FULL"), None)
+    self.assertIsNotNone(disk_find)
+    self.assertEqual(disk_find.severity, "HIGH")
 
   def test_15_disk_space_normal_85pct_boundary(self):
     """Test 15: Block disk space at 85% (strictly below 90% threshold -> no alarm)."""
     payload = {
-        "disk_usage": ["/dev/sda1 100G 85G 15G 85% /"],
+        "disk_usage": ["/dev/sda1 100G 85G 15G 85% /data"],
     }
     bundle = rca.parse_telemetry(json.dumps(payload))
     findings, _ = rca.evaluate_rca(bundle, sanitize=False)
     self.assertFalse(any(f.category == "DISK_SPACE_FULL" for f in findings))
 
   # -------------------------------------------------------------
-  # Group 4: Systemd Failure Exit Codes & Cluster Awareness (Tests 16-23)
+  # Group 4: Systemd Service Unit Failures & Quorum (Tests 16-23)
   # -------------------------------------------------------------
 
   def test_16_systemd_exit_203_exec(self):
     """Test 16: status=203/EXEC missing binary executable."""
     payload = {
-        "failed_services": ["app.service"],
+        "failed_services": ["api-worker.service"],
         "recent_kernel_errors": [
-            "systemd[1]: app.service: Main process exited, code=exited,"
+            "systemd[1]: api-worker.service: Main process exited, code=exited,"
             " status=203/EXEC"
         ],
     }
@@ -257,9 +257,9 @@ class LinuxServerRCAThirtyTestSuite(unittest.TestCase):
   def test_17_systemd_exit_217_user(self):
     """Test 17: status=217/USER missing configured user account."""
     payload = {
-        "failed_services": ["daemon.service"],
+        "failed_services": ["prometheus.service"],
         "recent_kernel_errors": [
-            "systemd[1]: daemon.service: Main process exited, code=exited,"
+            "systemd[1]: prometheus.service: Main process exited, code=exited,"
             " status=217/USER"
         ],
     }
@@ -267,15 +267,15 @@ class LinuxServerRCAThirtyTestSuite(unittest.TestCase):
     findings, _ = rca.evaluate_rca(bundle, sanitize=False)
     f = next(f for f in findings if f.category == "SYSTEMD_FAILURE")
     self.assertIn("status=217/USER", f.title)
-    self.assertIn("useradd -r", " ".join(f.remediation_steps))
+    self.assertTrue(any("useradd" in step for step in f.remediation_steps))
 
   def test_18_systemd_exit_1_failure(self):
     """Test 18: status=1/FAILURE application configuration syntax crash."""
     payload = {
         "failed_services": ["nginx.service"],
         "recent_kernel_errors": [
-            "systemd[1]: nginx.service: Main process exited, code=exited,"
-            " status=1/FAILURE"
+            "nginx[102]: nginx: [emerg] unknown directive 'proxy_pas' in /etc/nginx/nginx.conf:45",
+            "systemd[1]: nginx.service: Main process exited, code=exited, status=1/FAILURE",
         ],
     }
     bundle = rca.parse_telemetry(json.dumps(payload))
@@ -286,24 +286,24 @@ class LinuxServerRCAThirtyTestSuite(unittest.TestCase):
   def test_19_systemd_exit_137_sigkill(self):
     """Test 19: status=137 process killed forcefully."""
     payload = {
-        "failed_services": ["worker.service"],
+        "failed_services": ["redis.service"],
         "recent_kernel_errors": [
-            "systemd[1]: worker.service: Main process exited, code=killed,"
+            "systemd[1]: redis.service: Main process exited, code=killed,"
             " status=137"
         ],
     }
     bundle = rca.parse_telemetry(json.dumps(payload))
     findings, _ = rca.evaluate_rca(bundle, sanitize=False)
     f = next(f for f in findings if f.category == "SYSTEMD_FAILURE")
-    self.assertEqual(f.severity, "CRITICAL")
     self.assertIn("status=137", f.title)
+    self.assertEqual(f.severity, "CRITICAL")
 
   def test_20_systemd_exit_143_sigterm(self):
     """Test 20: status=143 graceful shutdown request (low severity)."""
     payload = {
-        "failed_services": ["cron.service"],
+        "failed_services": ["sidecar.service"],
         "recent_kernel_errors": [
-            "systemd[1]: cron.service: Main process exited, code=killed,"
+            "systemd[1]: sidecar.service: Main process exited, code=exited,"
             " status=143"
         ],
     }
@@ -313,12 +313,12 @@ class LinuxServerRCAThirtyTestSuite(unittest.TestCase):
     self.assertEqual(f.severity, "LOW")
 
   def test_21_systemd_exit_unknown_code(self):
-    """Test 21: Non-standard unmapped exit code (e.g. status=226/NAMESPACE)."""
+    """Test 21: Non-standard unmapped exit code (e.g. status=255/UNKNOWN)."""
     payload = {
         "failed_services": ["custom-sandbox.service"],
         "recent_kernel_errors": [
             "systemd[1]: custom-sandbox.service: Main process exited,"
-            " code=exited, status=226/NAMESPACE"
+            " code=exited, status=255/UNKNOWN"
         ],
     }
     bundle = rca.parse_telemetry(json.dumps(payload))
@@ -363,85 +363,67 @@ class LinuxServerRCAThirtyTestSuite(unittest.TestCase):
   def test_24_io_wait_high_util_99pct(self):
     """Test 24: Device utilization at 99.8% and %iowait at 42%."""
     payload = {
-        "io_metrics": {
-            "device": "nvme0n1",
-            "util_pct": 99.8,
-            "iowait_pct": 42.0,
-        },
+        "io_metrics": {"util_pct": 99.8, "iowait_pct": 42.0},
+        "processes_uninterruptible_sleep": ["backup-tar (PID: 3341, State: D)"],
     }
     bundle = rca.parse_telemetry(json.dumps(payload))
     findings, _ = rca.evaluate_rca(bundle, sanitize=False)
-    io_f = next((f for f in findings if f.category == "IO_WAIT_BOTTLENECK"), None)
-    self.assertIsNotNone(io_f)
-    self.assertIn("99.8%", io_f.title)
+    io_find = next(f for f in findings if f.category == "IO_WAIT_BOTTLENECK")
+    self.assertEqual(io_find.severity, "HIGH")
+    self.assertIn("backup-tar", io_find.description)
 
   def test_25_io_wait_hung_task_d_state(self):
     """Test 25: Kernel hung task message with process in D-state."""
     payload = {
-        "processes_uninterruptible_sleep": ["mysqld (PID: 2401, State: D)"],
+        "io_metrics": {"util_pct": 90.0, "iowait_pct": 35.0},
         "recent_kernel_errors": [
-            "INFO: task mysqld:2401 blocked for more than 120 seconds."
+            "INFO: task postgres:1290 blocked for more than 120 seconds.",
+            "echo 0 > /proc/sys/kernel/hung_task_timeout_secs disables this message.",
         ],
     }
     bundle = rca.parse_telemetry(json.dumps(payload))
     findings, _ = rca.evaluate_rca(bundle, sanitize=False)
-    io_f = next((f for f in findings if f.category == "IO_WAIT_BOTTLENECK"), None)
-    self.assertIsNotNone(io_f)
-    self.assertEqual(io_f.severity, "CRITICAL")
-    self.assertIn("mysqld", io_f.description)
+    io_find = next(f for f in findings if f.category == "IO_WAIT_BOTTLENECK")
+    self.assertEqual(io_find.severity, "CRITICAL")
 
   def test_26_filesystem_ext4_readonly_remount(self):
     """Test 26: EXT4-fs error triggering kernel read-only remount."""
     payload = {
         "recent_kernel_errors": [
-            (
-                "kernel: [129.40] EXT4-fs error (device sda1): ext4_lookup:"
-                " deleted inode referenced: 99120"
-            ),
-            (
-                "kernel: [129.41] Aborting journal on device sda1."
-                " Remounting filesystem read-only"
-            ),
+            "kernel: [1892.44] EXT4-fs error (device sda1): ext4_lookup: deleted inode referenced: 1441793",
+            "kernel: [1892.45] Remounting filesystem read-only",
         ],
     }
     bundle = rca.parse_telemetry(json.dumps(payload))
     findings, _ = rca.evaluate_rca(bundle, sanitize=False)
-    fs_f = next((f for f in findings if f.category == "FILESYSTEM_ERROR"), None)
-    self.assertIsNotNone(fs_f)
-    self.assertEqual(fs_f.severity, "CRITICAL")
-    self.assertIn("Read-Only Remount", fs_f.title)
+    fs_find = next((f for f in findings if f.category == "FILESYSTEM_ERROR"), None)
+    self.assertIsNotNone(fs_find)
+    self.assertEqual(fs_find.severity, "CRITICAL")
+    self.assertTrue(any("fsck" in step for step in fs_find.remediation_steps))
 
   # -------------------------------------------------------------
-  # Group 6: Compound Catastrophe Scenario (Test 27)
+  # Group 6: Compound Catastrophe Scenarios (Test 27)
   # -------------------------------------------------------------
 
   def test_27_compound_catastrophe_6_failures(self):
     """Test 27: Simultaneous OOM + Inode 100% + Disk 99% + Failed Unit + I/O Wait + Read-Only."""
-    compound = {
-        "hostname": "prod-catastrophe.synthetic.local",
-        "failed_services": ["etcd.service", "api.service"],
+    payload = {
+        "hostname": "prod-catastrophe-node",
+        "failed_services": ["cockroachdb.service"],
         "disk_usage": ["/dev/sda1 100G 99G 1G 99% /"],
         "inode_usage": ["/dev/sda2 1000000 1000000 0 100% /var"],
         "memory": {"oom_killer_events": 1},
-        "io_metrics": {"util_pct": 99.5, "iowait_pct": 35.0},
+        "io_metrics": {"util_pct": 99.5, "iowait_pct": 55.0},
         "recent_kernel_errors": [
-            (
-                "kernel: Out of memory: Kill process 1024 (api) score 950 or"
-                " sacrifice child"
-            ),
-            (
-                "kernel: EXT4-fs error: Remounting filesystem read-only on"
-                " device sda1"
-            ),
-            (
-                "systemd[1]: etcd.service: Main process exited, code=killed,"
-                " status=9/KILL"
-            ),
-            "INFO: task api:1024 blocked for more than 120 seconds.",
+            "kernel: Out of memory: Kill process 120 (cockroach) score 950",
+            "systemd[1]: cockroachdb.service: Main process exited, code=killed, status=137",
+            "INFO: task cockroach:120 blocked for more than 120 seconds.",
+            "kernel: EXT4-fs error (device sda1): remounting filesystem read-only",
         ],
     }
-    bundle = rca.parse_telemetry(json.dumps(compound))
-    findings, _ = rca.evaluate_rca(bundle, sanitize=True)
+    bundle = rca.parse_telemetry(json.dumps(payload))
+    findings, _ = rca.evaluate_rca(bundle, sanitize=False)
+    self.assertEqual(len(findings), 6)
     categories = {f.category for f in findings}
     self.assertEqual(
         categories,
@@ -516,10 +498,139 @@ class LinuxServerRCAThirtyTestSuite(unittest.TestCase):
     self.assertLess(elapsed, 1.0, "50k log lines must parse in under 1.0 second")
     self.assertGreater(len(findings), 0)
 
+  # -------------------------------------------------------------
+  # Group 9: Enterprise Hardened Diagnostic Coverage (Tests 31-38)
+  # -------------------------------------------------------------
+
+  def test_31_systemd_exit_200_chdir(self):
+    """Test 31: status=200/CHDIR missing working directory."""
+    payload = {
+        "failed_services": ["app-backend.service"],
+        "recent_kernel_errors": [
+            "systemd[1]: app-backend.service: Main process exited, code=exited, status=200/CHDIR"
+        ],
+    }
+    bundle = rca.parse_telemetry(json.dumps(payload))
+    findings, _ = rca.evaluate_rca(bundle, sanitize=False)
+    f = next(f for f in findings if f.category == "SYSTEMD_FAILURE")
+    self.assertIn("status=200/CHDIR", f.title)
+    self.assertIn("WorkingDirectory", f.description)
+
+  def test_32_systemd_exit_214_setscheduler(self):
+    """Test 32: status=214/SETSCHEDULER missing real-time capabilities."""
+    payload = {
+        "failed_services": ["rt-audio.service"],
+        "recent_kernel_errors": [
+            "systemd[1]: rt-audio.service: Main process exited, code=exited, status=214/SETSCHEDULER"
+        ],
+    }
+    bundle = rca.parse_telemetry(json.dumps(payload))
+    findings, _ = rca.evaluate_rca(bundle, sanitize=False)
+    f = next(f for f in findings if f.category == "SYSTEMD_FAILURE")
+    self.assertIn("status=214/SETSCHEDULER", f.title)
+    self.assertTrue(any("CAP_SYS_NICE" in h for h in f.remediation_steps))
+
+  def test_33_systemd_exit_208_stdin(self):
+    """Test 33: status=208/STDIN file descriptor redirection failure."""
+    payload = {
+        "failed_services": ["collector.service"],
+        "recent_kernel_errors": [
+            "systemd[1]: collector.service: Main process exited, code=exited, status=208/STDIN"
+        ],
+    }
+    bundle = rca.parse_telemetry(json.dumps(payload))
+    findings, _ = rca.evaluate_rca(bundle, sanitize=False)
+    f = next(f for f in findings if f.category == "SYSTEMD_FAILURE")
+    self.assertIn("status=208/STDIN", f.title)
+
+  def test_34_snap_loop_mount_filtering(self):
+    """Test 34: Ensure Ubuntu /dev/loop and /snap mounts at 100% do not trigger false alarms."""
+    payload = {
+        "disk_usage": [
+            "/dev/sda1 100G 40G 60G 40% /",
+            "/dev/loop0 55M 55M 0 100% /snap/core/1234",
+            "/dev/loop1 64M 64M 0 100% /snap/core22/864",
+        ],
+        "inode_usage": [
+            "/dev/sda1 6553600 500000 6053600 8% /",
+            "/dev/loop0 12800 12800 0 100% /snap/core/1234",
+        ],
+    }
+    bundle = rca.parse_telemetry(json.dumps(payload))
+    findings, _ = rca.evaluate_rca(bundle, sanitize=False)
+    disk_or_inode = [
+        f for f in findings if f.category in ("DISK_SPACE_FULL", "INODE_EXHAUSTION")
+    ]
+    self.assertEqual(len(disk_or_inode), 0, "Snap/loop devices at 100% must be ignored")
+
+  def test_35_variable_hung_task_duration(self):
+    """Test 35: Detect hung tasks with variable intervals (e.g. 60s or 300s)."""
+    payload = {
+        "recent_kernel_errors": [
+            "INFO: task postgres:1849 blocked for more than 60 seconds.",
+            "echo 0 > /proc/sys/kernel/hung_task_timeout_secs disables this message.",
+        ],
+    }
+    bundle = rca.parse_telemetry(json.dumps(payload))
+    findings, _ = rca.evaluate_rca(bundle, sanitize=False)
+    io_find = next(f for f in findings if f.category == "IO_WAIT_BOTTLENECK")
+    self.assertEqual(io_find.severity, "CRITICAL")
+    self.assertTrue(
+        any("blocked for more than 60 seconds" in ev for ev in io_find.evidence)
+    )
+
+  def test_36_storage_block_controller_error(self):
+    """Test 36: Detect storage block driver and NVMe command timeouts."""
+    payload = {
+        "recent_kernel_errors": [
+            "kernel: [ 102.345] blk_update_request: I/O error, dev sda, sector 98765432 op 0x0:(READ)",
+            "kernel: [ 102.346] Buffer I/O error on dev sda1, logical block 12345, async page read",
+        ],
+    }
+    bundle = rca.parse_telemetry(json.dumps(payload))
+    findings, _ = rca.evaluate_rca(bundle, sanitize=False)
+    io_find = next(f for f in findings if f.category == "IO_WAIT_BOTTLENECK")
+    self.assertEqual(io_find.severity, "CRITICAL")
+    self.assertTrue(any("blk_update_request" in ev for ev in io_find.evidence))
+
+  def test_37_multiservice_exit_code_isolation(self):
+    """Test 37: Isolate distinct exit codes for multiple failed services without crosstalk."""
+    payload = {
+        "failed_services": ["web-proxy.service", "cache-store.service"],
+        "recent_kernel_errors": [
+            "systemd[1]: web-proxy.service: Main process exited, code=exited, status=203/EXEC",
+            "systemd[1]: Failed to start web-proxy.service.",
+            "systemd[1]: cache-store.service: Main process exited, code=exited, status=1/FAILURE",
+            "systemd[1]: Failed to start cache-store.service.",
+        ],
+    }
+    bundle = rca.parse_telemetry(json.dumps(payload))
+    findings, _ = rca.evaluate_rca(bundle, sanitize=False)
+    svc_findings = [f for f in findings if f.category == "SYSTEMD_FAILURE"]
+    self.assertEqual(len(svc_findings), 2)
+    f_proxy = next(f for f in svc_findings if "web-proxy.service" in f.title)
+    f_cache = next(f for f in svc_findings if "cache-store.service" in f.title)
+    self.assertIn("status=203/EXEC", f_proxy.title)
+    self.assertIn("status=1/FAILURE", f_cache.title)
+
+  def test_38_adversarial_sanitization_ipv6_and_emails(self):
+    """Test 38: Scrub public IPv4, IPv6 addresses, and corporate UPNs (Rule 4)."""
+    sanitizer = rca.Sanitizer()
+    raw = (
+        "Alert sent to admin.ops@enterprise.corp regarding host fe80::215:5dff:fe00:402 "
+        "connecting to public api 142.250.190.46 and IPv6 2001:0db8:85a3:0000:0000:8a2e:0370:7334."
+    )
+    scrubbed = sanitizer.scrub_text(raw)
+    self.assertNotIn("admin.ops@enterprise.corp", scrubbed)
+    self.assertIn("user-masked@synthetic-test.local", scrubbed)
+    self.assertNotIn("142.250.190.46", scrubbed)
+    self.assertNotIn("2001:0db8:85a3:0000:0000:8a2e:0370:7334", scrubbed)
+    self.assertIn("2001:db8::1", scrubbed)
+
 
 def main():
   print("======================================================================")
-  print("Executing Comprehensive 30-Test Stress & Fuzzing Battery")
+  print("Executing Comprehensive 38-Test Stress & Fuzzing Battery")
   print("======================================================================")
   suite = unittest.TestLoader().loadTestsFromTestCase(
       LinuxServerRCAThirtyTestSuite

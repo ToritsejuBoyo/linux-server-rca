@@ -70,7 +70,7 @@ while read -r line; do
     clean_line=$(echo "$line" | sed 's/"/\\"/g')
     echo -n '    "'"$clean_line"'"'
   fi
-done < <(df -hP 2>/dev/null | grep -vE '^Filesystem|tmpfs|cdrom|overlay|shm')
+done < <(df -hP 2>/dev/null | grep -vE '^Filesystem|tmpfs|cdrom|overlay|shm|/dev/loop|/snap')
 echo ""
 echo '  ],'
 
@@ -83,7 +83,7 @@ while read -r line; do
     clean_line=$(echo "$line" | sed 's/"/\\"/g')
     echo -n '    "'"$clean_line"'"'
   fi
-done < <(df -iP 2>/dev/null | grep -vE '^Filesystem|tmpfs|cdrom|overlay|shm')
+done < <(df -iP 2>/dev/null | grep -vE '^Filesystem|tmpfs|cdrom|overlay|shm|/dev/loop|/snap')
 echo ""
 echo '  ],'
 
