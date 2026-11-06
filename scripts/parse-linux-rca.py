@@ -94,6 +94,18 @@ class Finding:
     return asdict(self)
 
 
+def _safe_dict(val: Any) -> Dict[str, Any]:
+  return val if isinstance(val, dict) else {}
+
+
+def _safe_list(val: Any) -> List[Any]:
+  return val if isinstance(val, list) else []
+
+
+def _safe_str(val: Any, default: str = "") -> str:
+  return str(val) if val is not None else default
+
+
 class Sanitizer:
   """Client-side privacy engine masking hostnames, users, and IPs (Rule 4)."""
 
@@ -104,7 +116,7 @@ class Sanitizer:
 
   def sanitize_hostname(self, raw_host: str) -> str:
     if not raw_host or raw_host.startswith("mock-server-"):
-      return raw_host
+      return raw_host if raw_host else "mock-server-01.synthetic-lab.local"
     if raw_host in self.host_map:
       return self.host_map[raw_host]
     h = hashlib.sha256(raw_host.encode("utf-8")).hexdigest()[:8]
@@ -123,14 +135,22 @@ class Sanitizer:
     return mock
 
   def scrub_text(self, text: str) -> str:
-    # Scrub passwords and tokens
+    # 1. Scrub URI credentials (e.g. postgresql://user:pass@host:5432/db)
     clean = re.sub(
-        r"(password|token|secret|key)\s*[:=]\s*[^\s\n\r]+",
-        r"\1: [REDACTED-SECRET]",
+        r"([a-zA-Z0-9_\-]+://[^:\s]+):([^@\s]+)@",
+        r"\1:[REDACTED-SECRET]@",
         text,
+    )
+
+    # 2. Scrub passwords, tokens, API keys, secrets
+    clean = re.sub(
+        r"(password|token|secret|api[_-]?key|pass|auth_key)\s*[:=]\s*[^\s\n\r]+",
+        r"\1: [REDACTED-SECRET]",
+        clean,
         flags=re.IGNORECASE,
     )
-    # Mask private IP addresses
+
+    # 3. Mask IPv4 addresses (private & public)
     clean = re.sub(
         r"\b10\.\d{1,3}\.\d{1,3}\.\d{1,3}\b",
         lambda m: self.sanitize_ip(m.group(0)),
@@ -154,11 +174,13 @@ def parse_telemetry(raw_data: str) -> Dict[str, Any]:
   trimmed = raw_data.strip()
   if trimmed.startswith("{") and trimmed.endswith("}"):
     try:
-      return json.loads(trimmed)
+      parsed_json = json.loads(trimmed)
+      if isinstance(parsed_json, dict):
+        return parsed_json
     except Exception:
       pass
 
-  # Fallback: Parse ad-hoc pasted terminal text
+  # Fallback: Parse ad-hoc pasted terminal text or malformed JSON
   parsed: Dict[str, Any] = {
       "timestamp_utc": "UNKNOWN",
       "hostname": "unknown-host",
@@ -221,22 +243,28 @@ def evaluate_rca(
   findings: List[Finding] = []
   f_idx = 1
 
-  hostname = bundle.get("hostname", "unknown-host")
+  hostname = _safe_str(bundle.get("hostname"), "unknown-host")
   if sanitize:
     hostname = sanitizer.sanitize_hostname(hostname)
 
-  failed_services = bundle.get("failed_services", [])
-  recent_errors = bundle.get("recent_kernel_errors", [])
-  disk_usage = bundle.get("disk_usage", [])
-  inode_usage = bundle.get("inode_usage", [])
-  mem_info = bundle.get("memory", {})
-  oom_events = mem_info.get("oom_killer_events", 0)
-  uninterruptible_procs = bundle.get("processes_uninterruptible_sleep", [])
-  io_metrics = bundle.get("io_metrics", {})
+  failed_services = [
+      _safe_str(x) for x in _safe_list(bundle.get("failed_services"))
+  ]
+  recent_errors = [
+      _safe_str(x) for x in _safe_list(bundle.get("recent_kernel_errors"))
+  ]
+  disk_usage = [_safe_str(x) for x in _safe_list(bundle.get("disk_usage"))]
+  inode_usage = [_safe_str(x) for x in _safe_list(bundle.get("inode_usage"))]
+  mem_info = _safe_dict(bundle.get("memory"))
+  oom_events = mem_info.get("oom_killer_events", 0) or 0
+  uninterruptible_procs = [
+      _safe_str(x)
+      for x in _safe_list(bundle.get("processes_uninterruptible_sleep"))
+  ]
+  io_metrics = _safe_dict(bundle.get("io_metrics"))
 
   error_blob = "\n".join(recent_errors)
 
-  # Check cluster awareness for failed services
   def get_cluster_warning(svc_name: str) -> Optional[str]:
     for cl in CLUSTER_SERVICES:
       if cl in svc_name.lower():
@@ -253,13 +281,16 @@ def evaluate_rca(
   has_oom_log = "out of memory" in error_blob.lower() or "oom-kill" in error_blob
   if oom_events > 0 or has_oom_log:
     victim_match = re.search(
-        r"Killed process \d+ \(([^)]+)\)|Kill process \d+ \(([^)]+)\)",
+        r"Killed process \d+ \(([^)]+)\)|Kill process \d+"
+        r" \(([^)]+)\)|task=([^,\s]+)",
         error_blob,
         re.IGNORECASE,
     )
     victim_proc = "process"
     if victim_match:
-      victim_proc = victim_match.group(1) or victim_match.group(2)
+      victim_proc = (
+          victim_match.group(1) or victim_match.group(2) or victim_match.group(3)
+      )
 
     evidence = [
         line
@@ -430,7 +461,14 @@ def evaluate_rca(
   # Branch 3: Systemd Unit Failure & Exit Codes
   # -------------------------------------------------------
   for svc in failed_services:
-    # Match specific exit code in recent errors for this service
+    svc_base = svc.replace(".service", "")
+    # Collect error lines specifically mentioning this service
+    svc_lines = [
+        line
+        for line in recent_errors
+        if svc in line or f"{svc_base}[" in line or f"{svc_base}:" in line
+    ]
+
     svc_code_matched = False
     for code_str, (meaning, action, sev) in SYSTEMD_EXIT_CODES.items():
       if code_str in error_blob:
@@ -460,6 +498,9 @@ def evaluate_rca(
                 " permissions and user existence before deployment."
             ),
         ]
+        evidence = svc_lines if svc_lines else [
+            line for line in recent_errors if code_str in line
+        ][:3]
         findings.append(
             Finding(
                 finding_id=f"FINDING-{f_idx:03d}",
@@ -469,8 +510,7 @@ def evaluate_rca(
                 description=(
                     f"Unit '{svc}' terminated unexpectedly. Exit code meaning: {meaning}"
                 ),
-                evidence=[
-                    line for line in recent_errors if code_str in line][:3],
+                evidence=evidence[:4],
                 remediation_steps=rem_steps,
                 hardening_steps=hard_steps,
                 cluster_warning=get_cluster_warning(svc),
@@ -489,6 +529,7 @@ def evaluate_rca(
           f"systemctl restart {svc}",
           f"systemctl is-active {svc}",
       ]
+      evidence = svc_lines if svc_lines else [f"Failed unit: {svc}"]
       findings.append(
           Finding(
               finding_id=f"FINDING-{f_idx:03d}",
@@ -498,7 +539,7 @@ def evaluate_rca(
               description=(
                   f"Unit '{svc}' is marked as failed by systemd manager. Needs immediate operational review."
               ),
-              evidence=[f"Failed unit: {svc}"],
+              evidence=evidence[:4],
               remediation_steps=rem_steps,
               hardening_steps=[
                   "Enable automated monitoring for systemd failed units."
@@ -511,8 +552,8 @@ def evaluate_rca(
   # -------------------------------------------------------
   # Branch 4: Storage I/O Wait Bottlenecks & Hung Tasks
   # -------------------------------------------------------
-  util_pct = io_metrics.get("util_pct", 0.0)
-  iowait_pct = io_metrics.get("iowait_pct", 0.0)
+  util_pct = float(io_metrics.get("util_pct", 0.0) or 0.0)
+  iowait_pct = float(io_metrics.get("iowait_pct", 0.0) or 0.0)
   has_hung_task = "blocked for more than 120 seconds" in error_blob
   if util_pct >= 85.0 or iowait_pct >= 20.0 or has_hung_task:
     rem_steps = [
@@ -614,10 +655,10 @@ def format_markdown(
     sanitizer: Sanitizer,
     sanitize: bool,
 ) -> str:
-  hostname = bundle.get("hostname", "unknown-host")
-  kernel = bundle.get("kernel", "unknown")
-  timestamp = bundle.get("timestamp_utc", "UNKNOWN")
-  uptime = bundle.get("uptime", "unknown")
+  hostname = _safe_str(bundle.get("hostname"), "unknown-host")
+  kernel = _safe_str(bundle.get("kernel"), "unknown")
+  timestamp = _safe_str(bundle.get("timestamp_utc"), "UNKNOWN")
+  uptime = _safe_str(bundle.get("uptime"), "unknown")
 
   if sanitize:
     hostname = sanitizer.sanitize_hostname(hostname)
@@ -713,7 +754,7 @@ def format_markdown(
   out.append(f"Primary Cause: {findings[0].title}")
   out.append(f"Severity: {overall_sev}")
   out.append(
-      f"Impacted Units: {', '.join(bundle.get('failed_services', ['N/A']))}"
+      f"Impacted Units: {', '.join(bundle.get('failed_services') or ['N/A'])}"
   )
   out.append(f"Diagnosis: {findings[0].description}")
   out.append(
@@ -768,9 +809,9 @@ def main() -> int:
     result = {
         "status": "success",
         "host": (
-            sanitizer.sanitize_hostname(bundle.get("hostname", ""))
+            sanitizer.sanitize_hostname(_safe_str(bundle.get("hostname")))
             if args.sanitize
-            else bundle.get("hostname", "")
+            else _safe_str(bundle.get("hostname"))
         ),
         "total_findings": len(findings),
         "findings": [f.to_dict() for f in findings],
