@@ -2,6 +2,13 @@
 
 ![linux-server-rca Demo](assets/demo.gif)
 
+[![tests](https://github.com/ToritsejuBoyo/linux-server-rca/actions/workflows/tests.yml/badge.svg)](https://github.com/ToritsejuBoyo/linux-server-rca/actions/workflows/tests.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![Python](https://img.shields.io/badge/python-3.9%2B-blue.svg)]()
+[![Dependencies](https://img.shields.io/badge/dependencies-zero%20(stdlib%20only)-brightgreen.svg)](CONTRIBUTING.md)
+[![Security](https://img.shields.io/badge/security-read--only%20%7C%20no%20egress-informational.svg)](SECURITY.md)
+[![Standard](https://img.shields.io/badge/standard-agentskills.io-blueviolet.svg)](https://agentskills.io)
+
 > An HD recording is available in [`assets/demo.mp4`](assets/demo.mp4).
 
 Deterministic, read-only Linux server triage and root-cause analysis skill for **RHEL, Ubuntu, Debian, Rocky Linux, and CentOS**. Analyzes crashed systemd services, kernel Out-Of-Memory (OOM) killer events, silent inode exhaustions, storage I/O wait locks, and filesystem corruption from sanitized telemetry, providing non-destructive recovery playbooks without trial-and-error rebooting.

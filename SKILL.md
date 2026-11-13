@@ -1,6 +1,18 @@
 ---
 name: linux-server-rca
-description: Diagnoses unresponsive or degraded Linux servers (RHEL, Ubuntu, Debian, Rocky Linux) by analyzing systemd service failures, journalctl/dmesg crash logs, OOM killer triggers, disk I/O bottlenecks, and inode exhaustion. Outputs a precise root cause analysis and verified, non-destructive recovery steps.
+description: >-
+  Diagnoses unresponsive or degraded Linux servers (RHEL, Ubuntu, Debian, Rocky Linux) by
+  analyzing systemd service failures, journalctl/dmesg crash logs, OOM killer triggers, disk I/O
+  bottlenecks, and inode exhaustion. Outputs a precise root cause analysis and verified,
+  non-destructive recovery steps. Use when triaging a hung or degraded Linux host, investigating a
+  failed systemd unit, analyzing journalctl or dmesg output, chasing high iowait or a full
+  filesystem, or diagnosing an OOM-killed process.
+license: MIT
+version: 1.0.0
+metadata:
+  standard: agentskills.io
+  dependencies: none (Python standard library only)
+  access: read-only collectors; no state is modified on target systems
 ---
 
 # Linux Systemd, Journalctl & Disk I/O Bottleneck RCA (`linux-server-rca`)
@@ -77,3 +89,29 @@ Populate and return the report following `assets/linux-rca-report-template.md`:
 - **RCA Parser:** `scripts/parse-linux-rca.py` (Zero-dependency Python 3 deterministic analyzer with SHA-256 sanitization).
 - **Technical Reference:** `references/linux-troubleshooting-matrix.md` (Systemd exit codes, kernel error thresholds, and OOM patterns).
 - **Output Template:** `assets/linux-rca-report-template.md` (Standard RCA and ticket escalation template).
+
+---
+
+## Data Handling & Sanitization
+
+Sanitization runs **client-side, before any output is produced**, so credentials and
+personal data are removed on the operator's machine rather than being sent to a model
+or pasted into a ticket.
+
+Two layers apply:
+
+1. This skill's own domain-aware masking (hostnames, accounts, and the identifiers
+   specific to this domain).
+2. A shared residual pass, [`scripts/sanitizer.py`](scripts/sanitizer.py), vendored
+   identically across every skill in the library. It is the common floor: private keys,
+   cloud provider keys, JWTs and bearer tokens, connection-string passwords, assigned
+   secrets, emails, IPv4/IPv6 addresses, MAC addresses, GUIDs, SSNs, payment card
+   numbers, and phone numbers.
+
+The contract is enforced by `tests/sanitizer_conformance_test.py`, which runs the same
+adversarial corpus in every skill. Documentation placeholders (RFC 5737/3849 addresses,
+RFC 7042 MAC ranges, `example.com` names, and existing `[REDACTED-*]` tokens) are
+preserved, so the pass is safe to apply more than once.
+
+Sanitization is thorough and tested, but it is not a substitute for reading output
+before sharing it outside your organization.

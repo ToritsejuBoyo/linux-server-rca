@@ -21,6 +21,21 @@ import re
 import sys
 from typing import Any, Dict, List, Optional, Tuple
 
+# ---------------------------------------------------------------------------
+# Shared residual sanitization pass (vendored: scripts/sanitizer.py).
+# Runs last, after this skill's domain-specific masking, so that every skill in
+# the library enforces an identical credential/PII floor. See
+# tests/sanitizer_conformance_test.py for the contract this must satisfy.
+# ---------------------------------------------------------------------------
+try:
+    from sanitizer import residual_scrub as _residual_scrub
+except ImportError:  # pragma: no cover - direct execution from another cwd
+    import os as _os
+    import sys as _sys
+    _sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
+    from sanitizer import residual_scrub as _residual_scrub
+
+
 SYSTEMD_EXIT_CODES: Dict[str, Tuple[str, str, str]] = {
     "status=203/EXEC": (
         "Executable binary missing, corrupted, or lacking execute (+x) permissions.",
@@ -207,6 +222,7 @@ class Sanitizer:
         lambda m: self.sanitize_ip(m.group(0)),
         clean,
     )
+    clean = _residual_scrub(clean)
     return clean
 
 
